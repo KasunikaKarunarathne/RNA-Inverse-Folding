@@ -1,4 +1,3 @@
-# phase4_qaoa_execution.py
 import os
 import json
 import matplotlib.pyplot as plt
