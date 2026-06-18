@@ -1,6 +1,10 @@
+import os
 import numpy as np
 from itertools import product
 from phase2_turner_energy import get_turner_energy
+import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
+from scipy.optimize import minimize, linprog
 
 # 1. Base pair encoding 
 # mapping the 6 allowed types to their [p0,p1,p2] binary signatures
@@ -18,14 +22,13 @@ ALLOWED_PAIRS = ['AU','UA','CG','GC','GU','UG']
 def build_qvector(pair1,pair2):
     """
     Combines the 3 bits of pair1 and 3 bits of pair2 into the 6-bit q vector.
-
     """
     return PAIR_ENCODING[pair1] + PAIR_ENCODING[pair2]
 
-def calculate_qubo_coeffs():
+def calculate_qubo_coeffs(method="ols"):
     """
-    Performs the Least-Squares fit: min || Phi * c - E ||^2
-    Returns the 22 calculated coefficients.
+    Solves for the 22 QUBO coefficients using different objective functions.
+    Available methods: 'ols', 'l1', 'minimax', 'rank'
     """
     num_samples = 36
     num_coeffs = 22
@@ -59,18 +62,58 @@ def calculate_qubo_coeffs():
                 Phi[row_i,col_i] = q[a] *q[b]
                 col_i +=1
         
-    # Solve least square regression
-    c_coeffs , residuals, _,_ = np.linalg.lstsq(Phi,E_true,rcond=None)
+    # --- Solve Regression based on selected method ---
+    if method == "ols":
+        c_coeffs , residuals, _,_ = np.linalg.lstsq(Phi,E_true,rcond=None)
+        if len(residuals) >0:
+            mse = residuals[0]/num_samples
+            print(f"[{method.upper()}] Mean Squared Error of approximation: {mse:.4f}")
+            
+    elif method == "l1":
+        def l1_loss(c):
+            return np.sum(np.abs(np.dot(Phi, c) - E_true))
+        c0, _, _, _ = np.linalg.lstsq(Phi, E_true, rcond=None)
+        res = minimize(l1_loss, c0, method='BFGS')
+        c_coeffs = res.x
+        
+    elif method == "minimax":
+        c_bounds = [(None, None)] * num_coeffs
+        t_bound = [(0, None)]
+        bounds = c_bounds + t_bound
+        c_obj = np.zeros(num_coeffs + 1)
+        c_obj[-1] = 1.0 
+        
+        A_ub = np.vstack((
+            np.hstack((Phi, -np.ones((num_samples, 1)))),
+            np.hstack((-Phi, -np.ones((num_samples, 1))))
+        ))
+        b_ub = np.concatenate((E_true, -E_true))
+        res = linprog(c_obj, A_ub=A_ub, b_ub=b_ub, bounds=bounds)
+        c_coeffs = res.x[:-1]
+        
+    elif method == "rank":
+        def rank_loss(c):
+            E_pred = np.dot(Phi, c)
+            loss = 0
+            for i in range(num_samples):
+                for j in range(i + 1, num_samples):
+                    diff_true = E_true[i] - E_true[j]
+                    diff_pred = E_pred[i] - E_pred[j]
+                    if diff_true * diff_pred < 0:
+                        loss += np.abs(diff_pred)
+            return loss + 0.01 * np.sum(c**2)
+            
+        c0, _, _, _ = np.linalg.lstsq(Phi, E_true, rcond=None)
+        res = minimize(rank_loss, c0, method='Nelder-Mead')
+        c_coeffs = res.x
+        
+    else:
+        raise ValueError(f"Unknown method '{method}'")
 
-    # if residuals exist it means the qubo is an apporx
-    if len(residuals) >0:
-        mse = residuals[0]/num_samples
-        print(f"Mean Squared Error of approximation: {mse:.4f}")
     return c_coeffs
 
-# coefficients = calculate_qubo_coeffs()
 
-def evaluate_qubo_fit(c_coeffs):
+def evaluate_qubo_fit(c_coeffs, method="ols"):
     """
     Takes the calculated coefficients and compares the QUBO predicted
     energies against the true Turner 2004 dictionary energies.
@@ -99,7 +142,7 @@ def evaluate_qubo_fit(c_coeffs):
                 col_i += 1
 
     print("="*60)
-    print("QUBO APPROXIMATION")
+    print(f"QUBO APPROXIMATION ({method.upper()})")
     print("="*60)
 
     # Calculate predicted energies using the passed coefficients
@@ -124,13 +167,63 @@ def evaluate_qubo_fit(c_coeffs):
     print(f"Max Absolute Error: {max_err:.4f} kcal/mol")
     print("="*60)
 
+    # --- STAGE 1: MONOTONICITY PLOT (36 STACKS) ---
+    # Create folder for plots
+    save_dir = "plots"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # Calculate Spearman Rank Correlation (1.0 is perfect ordering)
+    correlation, _ = spearmanr(E_true, E_pred)
+
+    plt.figure(figsize=(12, 9)) # Made wider to fit text labels
+    plt.scatter(E_true, E_pred, color='#9467bd', s=80, alpha=0.8, edgecolor='black')
+
+    # Add text labels (pair names) to each dot
+    for i, (pair1, pair2) in enumerate(combinations):
+        label = f"{pair1}/{pair2}"
+        plt.annotate(
+            label, 
+            (E_true[i], E_pred[i]),
+            textcoords="offset points", 
+            xytext=(5, 5), 
+            ha='left',
+            fontsize=8,
+            alpha=0.75
+        )
+
+    # Draw the perfect y=x diagonal line for reference
+    min_val = min(min(E_true), min(E_pred))
+    max_val = max(max(E_true), max(E_pred))
+    plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.7, label="Perfect Match (y=x)")
+
+    plt.title(f"Stage 1: Turner Stacks Monotonicity ({method.upper()})\nSpearman Rank Correlation: {correlation:.4f}", fontsize=14, fontweight='bold')
+    plt.xlabel("True Turner Energy (HUBO) [kcal/mol]", fontsize=12)
+    plt.ylabel("QUBO Approximated Energy [kcal/mol]", fontsize=12)
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.legend()
+    
+    # Save with dynamic filename
+    filename = f"TurnerVSQUBO_{method}.png"
+    filepath = os.path.join(save_dir, filename)
+    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    plt.close() # Closes the figure so it doesn't overlap the next one in the loop
+    
+    print(f"Stage 1 Monotonicity plot saved as '{filepath}'\n")
+
 
 if __name__ == "__main__":
-    # 1. calculate the weights
-    coefficients = calculate_qubo_coeffs()
+    # Loop through all 4 methods to test and plot them back-to-back
+    methods_to_test = ["ols", "l1", "minimax", "rank"]
     
-    print("Regression Complete.")
-    print(f"Calculated 22 coefficients: {np.round(coefficients, 3)}\n")
-    
-    # 2. Pass those weights into the diagnostic function to see the error margins
-    evaluate_qubo_fit(coefficients)
+    for method in methods_to_test:
+        print(f"\n--- Testing Method: {method.upper()} ---")
+        
+        # 1. calculate the weights
+        coefficients = calculate_qubo_coeffs(method=method)
+        
+        print(f"Regression Complete for {method.upper()}.")
+        print(f"Calculated 22 coefficients: {np.round(coefficients, 3)}\n")
+        
+        # 2. Pass those weights into the diagnostic function to see the error margins and plot
+        evaluate_qubo_fit(coefficients, method=method)
