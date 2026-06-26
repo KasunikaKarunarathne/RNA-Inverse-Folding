@@ -3,13 +3,22 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt  
 from scipy.stats import spearmanr
+import RNA
 
 from phase1_rules import extract_stems, PAIR_ENCODING,ALLOWED_PAIRS
 from phase2_turner_energy import calculate_true_turner_energy
 from phase3_coef_fitter import calculate_qubo_coeffs
 from phase4_qubo_builder import build_approx_qubo
 
-def generate_random_sequences(target_structure , num_samples =1000):
+# def get_vienna_energy(sequence, structure):
+#     """
+#     Calculates the exact free energy of a sequence folded into a specific
+#     structure using the official vienna packge
+#     """
+#     fc = RNA.fold_compound(sequence)
+#     return fc.eval_structure(structure)
+
+def generate_random_sequences(target_structure , num_samples):
     """
     Generate N random RNA sequences that physcally fir into the target structure 
     fill loops with dummy As
@@ -65,7 +74,7 @@ def evaluate_sequence_in_qubo(sequence , stems,Q_dict , offset):
 
     return qubo_energy
 
-def run_statistical_sampling(target_structure, num_samples = 1000,math_method="ols"):
+def run_statistical_sampling(target_structure, num_samples,math_method="ols"):
     """
     Pipeline 
     Generate sequences , scores them both ways (HUBO , QUBO) and
@@ -92,7 +101,9 @@ def run_statistical_sampling(target_structure, num_samples = 1000,math_method="o
     for seq in sequences:
         # score HUBO
         t_energy = calculate_true_turner_energy(stems,seq)
+        # t_energy = get_vienna_energy(seq, target_structure)
         true_energies.append(t_energy)
+
 
         # Score QUBO
         q_energy = evaluate_sequence_in_qubo(seq, stems, Q_dict,offset)
@@ -119,8 +130,6 @@ def run_statistical_sampling(target_structure, num_samples = 1000,math_method="o
     print("="*60 + "\n")
     # ---------------------------------------------------------
 
-
-
     # 5. Plotting
     save_dir = "correlation_plots"
     if not os.path.exists(save_dir):
@@ -136,12 +145,12 @@ def run_statistical_sampling(target_structure, num_samples = 1000,math_method="o
     plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, label="Perfect Match (y=x)")
     
     plt.title(f"Stage 2: Whole Structure Correlation ({math_method.upper()})\nTarget: {target_structure}\nSpearman Correlation: {correlation:.4f}", fontsize=14, fontweight='bold')
-    plt.xlabel("True Turner Energy (HUBO) [kcal/mol]", fontsize=12)
+    plt.xlabel("ViennaRNA Energy [kcal/mol]", fontsize=12)
     plt.ylabel("QUBO Approximated Energy [kcal/mol]", fontsize=12)
     plt.grid(True, linestyle=':', alpha=0.7)
     plt.legend()
 
-    filename = f"Correlation_{target_structure}_{math_method}.png"
+    filename = f"Correlation_{target_structure}_{math_method}_{num_samples}.png"
     filepath = os.path.join(save_dir, filename)
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
@@ -150,5 +159,9 @@ def run_statistical_sampling(target_structure, num_samples = 1000,math_method="o
 
 
 if __name__ == "__main__":
-    target_1 = "...((((((.........))))))."
-    run_statistical_sampling(target_1,num_samples=100000,math_method="ols")
+    target_1 = "(((...)))" # true structure :GCCGUCGGC
+    # target_1 = "...(((...)))" # true structure :GCCGUCGGC
+    # target_1 = "...(((...)))" # true structure :GCCGUCGGC
+    # methods : ols , l1 , minimax , rank
+    # new methods : huber, wls,margin_rank
+    run_statistical_sampling(target_1,num_samples=100,math_method="margin_rank")
