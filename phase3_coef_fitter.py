@@ -9,12 +9,12 @@ from scipy.optimize import minimize, linprog
 # 1. Base pair encoding 
 # mapping the 6 allowed types to their [p0,p1,p2] binary signatures
 PAIR_ENCODING = {
-    'AU':[1,1,1],
-    'UA':[1,1,0],
-    'CG':[1,0,1],
-    'GC':[1,0,0],
-    'GU':[0,1,1],
-    'UG':[0,1,0],
+    'AU': [1, 1, 1],
+    'UA': [1, 1, 0],
+    'CG': [1, 0, 1],
+    'GC': [0, 1, 0],
+    'GU': [0, 1, 1],
+    'UG': [1, 0, 0]
 }
 
 ALLOWED_PAIRS = ['AU','UA','CG','GC','GU','UG']
@@ -412,12 +412,12 @@ if __name__ == "__main__":
 #     print("="*60)
 
 
-# if __name__ == "__main__":
-#     # 1. calculate the weights
-#     coefficients = calculate_qubo_coeffs()
+if __name__ == "__main__":
+    # 1. calculate the weights
+    coefficients = calculate_qubo_coeffs()
     
-#     print("Regression Complete.")
-#     print(f"Calculated 22 coefficients: {np.round(coefficients, 3)}\n")
+    print("Regression Complete.")
+    print(f"Calculated 22 coefficients: {np.round(coefficients, 3)}\n")
     
-#     # 2. Pass those weights into the diagnostic function to see the error margins
-#     evaluate_qubo_fit(coefficients)
+    # 2. Pass those weights into the diagnostic function to see the error margins
+    evaluate_qubo_fit(coefficients)
