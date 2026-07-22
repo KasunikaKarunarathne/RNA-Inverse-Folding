@@ -10,13 +10,13 @@ from phase2_turner_energy import calculate_true_turner_energy
 from phase3_coef_fitter import calculate_qubo_coeffs
 from phase4_qubo_builder import build_approx_qubo
 
-# def get_vienna_energy(sequence, structure):
-#     """
-#     Calculates the exact free energy of a sequence folded into a specific
-#     structure using the official vienna packge
-#     """
-#     fc = RNA.fold_compound(sequence)
-#     return fc.eval_structure(structure)
+def get_vienna_energy(sequence, structure):
+    """
+    Calculates the exact free energy of a sequence folded into a specific
+    structure using the official vienna packge
+    """
+    fc = RNA.fold_compound(sequence)
+    return fc.eval_structure(structure)
 
 def generate_random_sequences(target_structure , num_samples):
     """
@@ -96,24 +96,25 @@ def run_statistical_sampling(target_structure, num_samples,math_method="ols"):
     combined_results = []
     true_energies =[]
     qubo_energies = []
+    vienna_energies =[]
 
     # 3. Score every sequence
     print("Scoring sequences with HUBO and QUBO.")
     for seq in sequences:
         # score HUBO
         t_energy = calculate_true_turner_energy(stems,seq)
-        # t_energy = get_vienna_energy(seq, target_structure)
         true_energies.append(t_energy)
+        v_energy = get_vienna_energy(seq,target_structure)
+        vienna_energies.append(v_energy)
 
         # Score QUBO
         q_energy = evaluate_sequence_in_qubo(seq, stems, Q_dict,offset)
         qubo_energies.append(q_energy)
-        combined_results.append({'seq': seq, 'true':t_energy,'qubo':q_energy})
+        combined_results.append({'seq': seq, 'true':t_energy,'qubo':q_energy, 'vienna':v_energy})
 
     # QUARTILE AND BOTTOM 10%
     # sort everything by QUBO energy (real quantum comp. read out the lowest qubo first)
-
-    qubo_sorted = sorted(combined_results, key= lambda x: x['qubo'])
+    qubo_sorted = sorted(combined_results, key= lambda x: x['qubo'])    
 
     n_seq = len(qubo_sorted)
     q_size = n_seq // 4 
@@ -122,10 +123,14 @@ def run_statistical_sampling(target_structure, num_samples,math_method="ols"):
     # Extract overall arrays 
     all_true = [x['true'] for x in qubo_sorted]
     all_qubo = [x['qubo'] for x in qubo_sorted]
+    all_vienna = [x['vienna'] for x in qubo_sorted]
+    
     overall_corr , _ = spearmanr(all_true, all_qubo)
+    vienna_corr, _ = spearmanr(all_vienna,all_qubo)
 
     print("\n ------ QUARTILE BREAKDOWN -------")
     print(f"Overall Full Landscape Correlation : {overall_corr: .4f}")
+    print(f"Overall Full Landscape Correlation (Vienna): {vienna_corr: .4f}")
 
     for i in range(4):
         chunk = qubo_sorted[i*q_size:(i+1)*q_size]
@@ -134,13 +139,19 @@ def run_statistical_sampling(target_structure, num_samples,math_method="ols"):
         corr,_ = spearmanr(c_true,c_qubo)
         print(f"Quartile {i+1} (Qubo energies {c_qubo[0]:.2f} to {c_qubo[-1]:.2f}):spearman = {corr:.4f}")
 
+
     # Isolate bottom 10%
     bottom_10_chunk = qubo_sorted[:ten_percent_idx]
     b10_true = [x['true'] for x in bottom_10_chunk]
     b10_qubo = [x['qubo'] for x in bottom_10_chunk]
+    b10_vienna = [x['vienna'] for x in bottom_10_chunk]
+    
     b10_corr,_ = spearmanr(b10_true,b10_qubo)
+    b10_vienna_corr , _ = spearmanr(b10_vienna,b10_qubo)
+
     print("\n--- THE 10% GROUND STATE TEST ---")
     print(f"Spearman Correlation (Lowest 10% of QUBO): {b10_corr:.4f}")
+    print(f"Spearman Correlation (Lowest 10% of QUBO (vienna)): {b10_vienna_corr:.4f}")
 
     # Tail overlap 
     # Are the sequences in the lowest 10% of QUBO space the exact same sequences in the lowest 10% of biological space
@@ -237,6 +248,23 @@ def run_statistical_sampling(target_structure, num_samples,math_method="ols"):
     plt.grid(True, linestyle=':', alpha=0.7)
     plt.legend()
     plt.savefig(os.path.join(save_dir, f"Bottom10_{target_structure}_{math_method}.png"), dpi=300, bbox_inches='tight')
+    plt.close()
+
+        # PLOT 1.5: The 10% Zoom-in for Vienna vs QUBO
+    plt.figure(figsize=(10, 8))
+    plt.scatter(b10_vienna, b10_qubo, color='#2ca02c', alpha=0.7, s=50, edgecolor='black')
+    
+    # Trendline for visual aid
+    z_v = np.polyfit(b10_vienna, b10_qubo, 1)
+    p_v = np.poly1d(z_v)
+    plt.plot(b10_vienna, p_v(b10_vienna), "r--", alpha=0.8, label=f"Trendline")
+
+    plt.title(f"Ground State Focus: Lowest 10% QUBO vs Vienna ({math_method.upper()})\nSpearman Correlation: {b10_vienna_corr:.4f}", fontsize=14, fontweight='bold')
+    plt.xlabel("Vienna Energy [kcal/mol]", fontsize=12)
+    plt.ylabel("QUBO Approximated Energy [kcal/mol]", fontsize=12)
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.legend()
+    plt.savefig(os.path.join(save_dir, f"Bottom10_Vienna_{target_structure}_{math_method}.png"), dpi=300, bbox_inches='tight')
     plt.close()
 
     # PLOT 2: Tail Overlap Histogram

@@ -140,4 +140,4 @@ if __name__ == "__main__":
     # Test on a few structures
     target_list = ["..............(((((.....)))))", "(((...)))", "...((((((.........))))))."]
     for i in target_list:
-        run_paired_sampling(i, num_samples=5000, math_method="ols")
+        run_paired_sampling(i, num_samples=100, math_method="ols")

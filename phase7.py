@@ -164,4 +164,4 @@ if __name__ == "__main__":
     # target_1 = "...((((((.........))))))." # true structure :GCCGUCGGC
     # methods : ols , l1 , minimax , rank
     # new methods : huber, wls,margin_rank
-    run_statistical_sampling(target_1,num_samples=5000,math_method="ols")
+    run_statistical_sampling(target_1,num_samples=100,math_method="ols")
