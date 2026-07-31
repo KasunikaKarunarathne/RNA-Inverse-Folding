@@ -1,3 +1,4 @@
+import dimod 
 from phase2_turner_energy import get_turner_energy
 from phase1_rules import ALLOWED_PAIRS
 import RNA
@@ -13,10 +14,45 @@ import matplotlib.pyplot as plt
 import csv
 import os
 
-def calculate_mirror_penalty(sequence, target_structure):
+def decode_bits_to_pairs(sample_dict,stems):
     """
-    Implements the soft-mirror heuristic from the paper.
-    Penalizes symmetric inward extensions into the loop with weight decay.
+    Converts dimod output bits (0s and 1s) back into RNA pairs
+    AU: 111, UA: 110, CG: 101, GC: 010, GU: 011, UG: 100
+    PAIR_ENCODING = {
+    'AU': [1, 1, 1],
+    'UA': [1, 1, 0],
+    'CG': [1, 0, 1],
+    'GC': [0, 1, 0],
+    'GU': [0, 1, 1],
+    'UG': [1, 0, 0]
+}
+    """
+    bit_to_pair ={
+        (1,1,1):'AU',(1,1,0):'UA',
+        (1,0,1):'CG',(0,1,0):'GC',
+        (0,1,1):'GU',(1,0,0):'UG'
+    }
+    pair_assignment = []
+    for stem in stems:
+        for (left,right) in stem:
+            b0 = sample_dict.get(f"p_{left}_{right}_0",0)
+            b1 = sample_dict.get(f"p_{left}_{right}_1",0)
+            b2 = sample_dict.get(f"p_{left}_{right}_2",0)
+
+            bit_tuple =(b0,b1,b2)
+            if bit_tuple not in bit_to_pair:
+                return None # solver fellinto an invalid state
+
+            pair_assignment.append(bit_to_pair[bit_tuple])
+    return tuple(pair_assignment)
+
+
+
+def calculate_shifted_mirror_penalty(sequence, target_structure, max_shift=2):
+    """
+    Implements a 'side shifter' version of the soft-mirror penalty.
+    Penalizes symmetric inward extensions, as well as staggered/shifted extensions 
+    (e.g., bulges) on the left, right, or both sides.
     """
     stems = extract_stems(target_structure)
     if not stems: return 0.0
@@ -24,57 +60,77 @@ def calculate_mirror_penalty(sequence, target_structure):
     stem = stems[-1]
     left, right = stem[-1] # q_0 (terminal pair)
     
-    # Calculate loop length L
-    L = right - left - 1
-    m = L // 2
-    if m == 0: return 0.0
-        
-    penalty = 0.0
-    prev_pair_str = sequence[left] + sequence[right]
-    curr_l, curr_r = left + 1, right - 1
+    total_penalty = 0.0
     
-    for d in range(1, m + 1):
-        curr_pair_str = sequence[curr_l] + sequence[curr_r]
-        
-        # Calculate weight w_d (lambda = 0.5)
-        w_d = 1.0 - 0.5 * ((d - 1) / (m - 1)) if m > 1 else 1.0
+    # We test different shifts (s_left, s_right).
+    # s_left=0, s_right=0 is the original exact mirror.
+    for s_left in range(max_shift + 1):
+        for s_right in range(max_shift + 1):
             
-        if curr_pair_str in ALLOWED_PAIRS and prev_pair_str in ALLOWED_PAIRS:
-            # stack_energy is negative for stable stacks. phi = max(0, -E)
-            stack_energy = get_turner_energy(prev_pair_str, curr_pair_str)
-            phi = max(0.0, -stack_energy) 
-            penalty += w_d * phi
+            curr_l = left + 1 + s_left
+            curr_r = right - 1 - s_right
             
-        prev_pair_str = curr_pair_str
-        curr_l += 1
-        curr_r -= 1
+            # Remaining loop length between these shifted points
+            L_remaining = curr_r - curr_l - 1
+            m = L_remaining // 2
+            if m <= 0: continue
+            
+            shift_penalty = 0.0
+            
+            # The 'anchor' pair for this shifted stem is the original terminal pair
+            prev_pair_str = sequence[left] + sequence[right]
+            
+            for d in range(1, m + 1):
+                curr_pair_str = sequence[curr_l] + sequence[curr_r]
+                
+                # Keep the same weight decay formula
+                w_d = 1.0 - 0.5 * ((d - 1) / (m - 1)) if m > 1 else 1.0
+                
+                if curr_pair_str in ALLOWED_PAIRS and prev_pair_str in ALLOWED_PAIRS:
+                    # Treat the shifted pairs as if they stack directly for the penalty
+                    stack_energy = get_turner_energy(prev_pair_str, curr_pair_str)
+                    phi = max(0.0, -stack_energy) 
+                    shift_penalty += w_d * phi
+                    
+                prev_pair_str = curr_pair_str
+                curr_l += 1
+                curr_r -= 1
+                
+            total_penalty += shift_penalty
 
-    return penalty
-
+    return total_penalty
 
 
 def get_qubo_top_10_percent(target_structure , num_samples=5000, math_method="ols"):
     """
-    Runs the phase 8 pipeline to get the top 10% sequences (lowest QUBO energy).
-    Returns a list of pair combinations.
+    Uses Simulated Annealing to efficiently sample the lowest-energy QUBO states, 
+    bypassing the slow brute-force random generation!
     """
     stems = extract_stems(target_structure)
     c_coeffs = calculate_qubo_coeffs(method=math_method)
     Q_dict , offset = build_approx_qubo(stems , c_coeffs)
-    samples = generate_random_pairs(stems, num_samples)
-    combined_results =[]
+    
+    # Initialize the classical simmulated annealer 
+    sampler = dimod.SimulatedAnnealingSampler()
 
-    for stem_pairs_list , flat_tuple in samples:
-        t_energy = calculate_turner_from_pairs(stem_pairs_list)
-        q_energy = evaluate_qubo_from_pairs(stem_pairs_list,stems,Q_dict,offset)
-        combined_results.append({
-            'pairs_list': flat_tuple,
-            'true': t_energy,
-            'qubo': q_energy
-        })
+    # Command the solver to sample the qubo landscape num_samples times 
+    sampleset = sampler.sample_qubo(Q_dict,num_reads= num_samples)
+    combined_results  =[]
+
+    # read the output bits and decode them 
+    for sample , energy in sampleset.data(['sample','energy']):
+        pairs_list =decode_bits_to_pairs(sample ,stems)
+        # we only keep it if the solver finds a valid pair encoding 
+        if pairs_list is not None:
+            combined_results.append({
+                'pairs_list':pairs_list,
+                'qubo': energy+offset
+            })
+    # sort from lowest energy to highest taking the top 10%
     qubo_sorted = sorted(combined_results,key=lambda x:x['qubo'])
-    ten_percent_idx = int(len(qubo_sorted)*0.10)
-    return qubo_sorted[:ten_percent_idx] 
+    ten_percent_idx = max(1,int(len(qubo_sorted)*0.10))
+    return qubo_sorted[:ten_percent_idx]
+    
 
 def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
     """
@@ -110,7 +166,9 @@ def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
                 seq.append(random.choice(bases))
         full_seq = "".join(seq)
 
-        penalty = calculate_mirror_penalty(full_seq, target_structure)
+        penalty = calculate_shifted_mirror_penalty(full_seq, target_structure,max_shift=2)
+        # Add the new Phase 3 Entropy Penalty for the entire loop
+        #penalty += calculate_loop_entropy_penalty(full_seq,target_structure)
         candidates.append((penalty, full_seq))
     
     candidates.sort(key=lambda x: x[0])
@@ -148,7 +206,7 @@ def run_forward_folding_pipeline(target_structure ,initial_samples=5000 ,variati
     print(f"Success Rate                       : {succcess_rate:.2f}%")
     return total_variation_tested, succcess_count, succcess_rate
 
-def run_correlation(target_structure, num_samples=5000, math_method="ols"):
+def run_correlation(target_structure, num_samples=1000, math_method="ols"):
     print(f"\n==== Phase 9 Correlation (with Realistic Loops) ====")
     print(f"Target Structure: {target_structure}")
     
@@ -242,8 +300,8 @@ if __name__ == "__main__":
     # Create the directory for the hairpin test results
     out_dir = "hairpin_rna_test"
     os.makedirs(out_dir, exist_ok=True)
-    # Use a different filename so we don't overwrite the Annealer results!
-    summary_csv = os.path.join(out_dir, "summary_results_baseline.csv")    
+    summary_csv = os.path.join(out_dir, "summary_results.csv")
+    
     # Using 'w' to overwrite/create the summary file
     with open(summary_csv, "w", newline="") as f:
         writer = csv.writer(f)
@@ -258,7 +316,7 @@ if __name__ == "__main__":
         for i in target_list:
             print(f"\n\n{'='*50}\nTesting ORIGINAL structure: {i}\n{'='*50}")
             # original settings (1000 initial samples, 10 variations)
-            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=20)
+            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=10)
             overall_corr, b10_corr = run_correlation(i, num_samples=1000)
             
             writer.writerow([
