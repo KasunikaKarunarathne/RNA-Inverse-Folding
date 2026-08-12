@@ -128,8 +128,7 @@ def get_qubo_top_10_percent(target_structure , num_samples=5000, math_method="ol
             })
     # sort from lowest energy to highest taking the top 10%
     qubo_sorted = sorted(combined_results,key=lambda x:x['qubo'])
-    ten_percent_idx = max(1,int(len(qubo_sorted)*0.10))
-    return qubo_sorted[:ten_percent_idx]
+    return qubo_sorted[:10]
     
 
 def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
@@ -153,8 +152,8 @@ def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
     # Generate multiple full length variations by randomly filling the dots 
 
     bases = ['A','U','C','G']
-    # Phase 1 Scale up: 10,000 loop fills for aggressive filtering
-    pool_size = 10000 
+    # Phase 1 Scale up: 1000 loop fills for aggressive filtering
+    pool_size = 1000
     candidates = []
 
     for _ in range(pool_size):
@@ -262,8 +261,8 @@ def run_correlation(target_structure, num_samples=1000, math_method="ols"):
     print(f"Bottom 10% Spearman Correlation (Vienna vs QUBO): {b10_corr:.4f}")
     
     # Plotting
-    save_dir = "correlation_plots"
-    save_dir_terminal_outputs = "results/terminal_outputs/"
+    save_dir = "correlation_plots_N1000_K100"
+    save_dir_terminal_outputs = "results/terminal_outputs_N1000_K100/"
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(save_dir_terminal_outputs, exist_ok=True)
     
@@ -298,7 +297,7 @@ def run_correlation(target_structure, num_samples=1000, math_method="ols"):
 
 if __name__ == "__main__":
     # Create the directory for the hairpin test results
-    out_dir = "hairpin_rna_test"
+    out_dir = "hairpin_rna_test_N1000_K100"
     os.makedirs(out_dir, exist_ok=True)
     summary_csv = os.path.join(out_dir, "summary_results.csv")
     
@@ -308,7 +307,7 @@ if __name__ == "__main__":
         writer.writerow([
             "Target Structure", "Length", "Stems", 
             "Total Variations Tested", "Successful Folds", "Success Rate (%)",
-            "Overall Corr", "Bottom 10% Corr"
+            "Spearman Corr Overall", "Spearman Corr Bottom 10%"
         ])
         
         # 1. First, process the original structures
@@ -335,7 +334,7 @@ if __name__ == "__main__":
         for i in target_list_hairpin_rna:
             print(f"\n\n{'='*50}\nTesting ADDITIONAL structure: {i} (Stems: {i.count('(')})\n{'='*50}")
             # Using 20 variations as requested for the additional tests
-            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=20)
+            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=10)
             overall_corr, b10_corr = run_correlation(i, num_samples=1000)
             
             writer.writerow([

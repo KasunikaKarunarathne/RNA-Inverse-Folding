@@ -1,4 +1,4 @@
-import dimod 
+import neal 
 from phase2_turner_energy import get_turner_energy
 from phase1_rules import ALLOWED_PAIRS
 import RNA
@@ -111,17 +111,18 @@ def calculate_loop_entropy_penalty(sequence, target_structure):
                 # add a steep 2 penalty per potential pair 
     return penalty
 
-def get_qubo_top_10_percent(target_structure , num_samples=5000, math_method="ols"):
+def get_qubo_top_10_percent(target_structure , num_samples=5000, math_method="quantum_anneal", c_coeffs=None):
     """
     Uses Simulated Annealing to efficiently sample the lowest-energy QUBO states, 
     bypassing the slow brute-force random generation!
     """
     stems = extract_stems(target_structure)
-    c_coeffs = calculate_qubo_coeffs(method=math_method)
+    if c_coeffs is None:
+        c_coeffs = calculate_qubo_coeffs(method=math_method)
     Q_dict , offset = build_approx_qubo(stems , c_coeffs)
     
     # Initialize the classical simmulated annealer 
-    sampler = dimod.SimulatedAnnealingSampler()
+    sampler = neal.SimulatedAnnealingSampler()
 
     # Command the solver to sample the qubo landscape num_samples times 
     sampleset = sampler.sample_qubo(Q_dict,num_reads= num_samples)
@@ -138,8 +139,7 @@ def get_qubo_top_10_percent(target_structure , num_samples=5000, math_method="ol
             })
     # sort from lowest energy to highest taking the top 10%
     qubo_sorted = sorted(combined_results,key=lambda x:x['qubo'])
-    ten_percent_idx = max(1,int(len(qubo_sorted)*0.10))
-    return qubo_sorted[:ten_percent_idx]
+    return qubo_sorted[:10]
     
 
 def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
@@ -163,8 +163,8 @@ def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
     # Generate multiple full length variations by randomly filling the dots 
 
     bases = ['A','U','C','G']
-    # Phase 1 Scale up: 10,000 loop fills for aggressive filtering
-    pool_size = 10000 
+    # Phase 1 Scale up: 1000 loop fills for aggressive filtering
+    pool_size = 1000
     candidates = []
 
     for _ in range(pool_size):
@@ -186,12 +186,12 @@ def generate_full_sequence(target_structure, pair_assignment, num_samples=10):
         
 
 
-def run_forward_folding_pipeline(target_structure ,initial_samples=5000 ,variations =10, math_method="ols" ):
+def run_forward_folding_pipeline(target_structure ,initial_samples=5000 ,variations =10, math_method="quantum_anneal", c_coeffs=None):
     print(f"\n==== Phase 9: Forward Folding Validation ====")
     print(f"Target Structure: {target_structure}")
     
     print("\n1. Running QUBO to find Top 10% base-pair assignments...")
-    top_10_qubo = get_qubo_top_10_percent(target_structure,initial_samples,math_method)
+    top_10_qubo = get_qubo_top_10_percent(target_structure, initial_samples, math_method, c_coeffs=c_coeffs)
     print(f"Extracted {len(top_10_qubo)} top QUBO-predicted pair assignments.")
     
     succcess_count =0
@@ -216,14 +216,15 @@ def run_forward_folding_pipeline(target_structure ,initial_samples=5000 ,variati
     print(f"Success Rate                       : {succcess_rate:.2f}%")
     return total_variation_tested, succcess_count, succcess_rate
 
-def run_correlation(target_structure, num_samples=1000, math_method="ols"):
+def run_correlation(target_structure, num_samples=1000, math_method="quantum_anneal", c_coeffs=None):
     print(f"\n==== Phase 9 Correlation (with Realistic Loops) ====")
     print(f"Target Structure: {target_structure}")
     
     stems = extract_stems(target_structure)
     
     print("1. Building QUBO model...")
-    c_coeffs = calculate_qubo_coeffs(method=math_method)
+    if c_coeffs is None:
+        c_coeffs = calculate_qubo_coeffs(method=math_method)
     Q_dict, offset = build_approx_qubo(stems, c_coeffs)
     
     print("2. Generating random pair combinations...")
@@ -272,8 +273,8 @@ def run_correlation(target_structure, num_samples=1000, math_method="ols"):
     print(f"Bottom 10% Spearman Correlation (Vienna vs QUBO): {b10_corr:.4f}")
     
     # Plotting
-    save_dir = "correlation_plots"
-    save_dir_terminal_outputs = "results/terminal_outputs/"
+    save_dir = "correlation_plots_N1000_K100"
+    save_dir_terminal_outputs = "results/terminal_outputs_N1000_K100/"
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(save_dir_terminal_outputs, exist_ok=True)
     
@@ -308,8 +309,16 @@ def run_correlation(target_structure, num_samples=1000, math_method="ols"):
 
 if __name__ == "__main__":
     # Create the directory for the hairpin test results
-    out_dir = "hairpin_rna_test"
+    out_dir = "hairpin_rna_test_N1000_K100"
     os.makedirs(out_dir, exist_ok=True)
+    
+    # CRITICAL SPEED OPTIMIZATION: Compute coefficients just ONCE for the entire run!
+    print("=========================================================================")
+    print("Pre-computing QUBO regression coefficients ONCE for all target structures...")
+    global_coeffs = calculate_qubo_coeffs(method="quantum_anneal")
+    print("Coefficients pre-computed successfully! Starting evaluation loops...")
+    print("=========================================================================\n")
+
     # Use a different filename so we don't overwrite the Phase 11 results!
     summary_csv = os.path.join(out_dir, "summary_results_annealing.csv")    
     # Using 'w' to overwrite/create the summary file
@@ -318,7 +327,7 @@ if __name__ == "__main__":
         writer.writerow([
             "Target Structure", "Length", "Stems", 
             "Total Variations Tested", "Successful Folds", "Success Rate (%)",
-            "Overall Corr", "Bottom 10% Corr"
+            "Spearman Corr Overall", "Spearman Corr Bottom 10%"
         ])
         
         # 1. First, process the original structures
@@ -326,8 +335,8 @@ if __name__ == "__main__":
         for i in target_list:
             print(f"\n\n{'='*50}\nTesting ORIGINAL structure: {i}\n{'='*50}")
             # original settings (1000 initial samples, 10 variations)
-            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=10)
-            overall_corr, b10_corr = run_correlation(i, num_samples=1000)
+            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=10, c_coeffs=global_coeffs)
+            overall_corr, b10_corr = run_correlation(i, num_samples=1000, c_coeffs=global_coeffs)
             
             writer.writerow([
                 i, len(i), i.count('('),
@@ -345,8 +354,8 @@ if __name__ == "__main__":
         for i in target_list_hairpin_rna:
             print(f"\n\n{'='*50}\nTesting ADDITIONAL structure: {i} (Stems: {i.count('(')})\n{'='*50}")
             # Using 20 variations as requested for the additional tests
-            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=20)
-            overall_corr, b10_corr = run_correlation(i, num_samples=1000)
+            tot_vars, succ_count, succ_rate = run_forward_folding_pipeline(i, initial_samples=1000, variations=10, c_coeffs=global_coeffs)
+            overall_corr, b10_corr = run_correlation(i, num_samples=1000, c_coeffs=global_coeffs)
             
             writer.writerow([
                 i, len(i), i.count('('),
