@@ -1,12 +1,39 @@
-import neal
+from numpy import random
+# pyrefly: ignore [missing-import]
+from dwave.samplers import SimulatedAnnealingSampler
+from dwave.samplers import PathIntegralAnnealingSampler
 import RNA
 from collections import defaultdict
 from phase1_rules import extract_stems
 from phase3_coef_fitter import calculate_qubo_coeffs
 from phase4_qubo_builder import build_approx_qubo
 from phase10_annealin import decode_bits_to_pairs
-
 import re
+
+def calculate_structural_difficulty(target_structure, stems):
+    num_unpaired = target_structure.count('.')
+    num_stems = len(stems)
+    total_length = len(target_structure)
+    
+    unpaired_ratio = num_unpaired / total_length if total_length > 0 else 0
+    
+    # Base difficulty
+    difficulty = 1.0
+    
+    # If high proportion of unpaired bases (lots of loops), kissing loops are highly likely
+    if unpaired_ratio > 0.4:
+        difficulty += 1.0
+        
+    # If multiple stems, kissing loops are possible across stems
+    if num_stems > 1:
+        difficulty += 1.5
+        
+    # Extra difficulty for very short stems (length < 3)
+    for stem in stems:
+        if len(stem) < 3:
+            difficulty += 0.5
+            
+    return difficulty
 
 def build_extended_qubo(target_structure, stems, c_coeffs):
     # 1. Start with the standard stem QUBO
@@ -23,10 +50,11 @@ def build_extended_qubo(target_structure, stems, c_coeffs):
         tetraloop_stems.append((close_left, close_right))
         
         idx = match.start() + 1
-        fixed_loops[idx] = 'G'
-        fixed_loops[idx+1] = 'C'
-        fixed_loops[idx+2] = 'A'
-        fixed_loops[idx+3] = 'A'
+        tetraloop_choice = random.choice(["GCAA", "UUCG"])
+        fixed_loops[idx] = tetraloop_choice[0]
+        fixed_loops[idx+1] = tetraloop_choice[1]
+        fixed_loops[idx+2] = tetraloop_choice[2]
+        fixed_loops[idx+3] = tetraloop_choice[3]
         
     for (left, right) in tetraloop_stems:
         # Force the QUBO to pick CG (1, 0, 1) for the closing pair.
@@ -50,9 +78,10 @@ def build_extended_qubo(target_structure, stems, c_coeffs):
     
     bases = ["A", "C", "G", "U"]
     
-    # Weights for the penalties
-    P_onehot = 100.0  # Force exactly 1 base per position
-    P_anti = 50.0     # Penalize unwanted loop-loop pairs
+    # Weights for the penalties dynamically scaled by difficulty
+    difficulty_multiplier = calculate_structural_difficulty(target_structure, stems)
+    P_onehot = 100.0 * max(1.0, difficulty_multiplier * 0.5)
+    P_anti = 50.0 * difficulty_multiplier
     
     # 4. One-Hot Penalty and Linear Bias
     # We add a small tax to C, G, U to strongly encourage the annealer to pick A for loops,
@@ -75,20 +104,58 @@ def build_extended_qubo(target_structure, stems, c_coeffs):
     # 5. Anti-Pairing Penalty (Negative Design)
     # Penalize valid pairs between ANY remaining loops >= 4 apart
     valid_pairs = [("A", "U"), ("U", "A"), ("G", "C"), ("C", "G"), ("G", "U"), ("U", "G")]
-    
+
+
     for i in range(len(loop_indices)):
         for j in range(i+1, len(loop_indices)):
             idx1 = loop_indices[i]
             idx2 = loop_indices[j]
+            distance = abs(idx1-idx2)
             
-            # RNA needs 3 unpaired bases to make a hairpin bend
-            if abs(idx1 - idx2) >= 4:
+            # RNA needs 3 unpaired bases to make a hairpin bend (>= 4).
+            if distance >= 4:
+                # --- Dynamic Decomposition (Probabilistic Bound) ---
+                probabilistic_weight = P_anti * (4.0 / distance) 
+                
+                # --- Modulo-Separability (Anti-Isolation) ---
+                has_inner_neighbor = (idx1 + 1 in loop_indices) and (idx2 - 1 in loop_indices)
+                has_outer_neighbor = (idx1 - 1 in loop_indices) and (idx2 + 1 in loop_indices)
+                is_isolated = not (has_inner_neighbor or has_outer_neighbor)
+                
+                penalty = probabilistic_weight * (2.0 if is_isolated else 1.0)
+                
                 for b1, b2 in valid_pairs:
                     var1 = f"x_{idx1}_{b1}"
                     var2 = f"x_{idx2}_{b2}"
                     key = tuple(sorted([var1, var2]))
-                    Q_ext[key] += P_anti
+                    Q_ext[key] += penalty
+        # 6. Mirror Penalty (Prevent stem inward extensions)
+    # This checks the bases right next to the stem and penalizes them if they form a valid pair!
+    P_mirror = 100.0 * difficulty_multiplier
+    
+    for stem in stems:
+        left, right = stem[-1] # Innermost pair of the stem
+        L = right - left - 1
+        m = L // 2
+        
+        curr_l, curr_r = left + 1, right - 1
+        
+        for d in range(1, m + 1):
+            if curr_l >= curr_r: break
+            
+            if curr_l in loop_indices and curr_r in loop_indices:
+                w_d = 1.0 - 0.5 * ((d - 1) / (m - 1)) if m > 1 else 1.0
+                
+                # Penalize any of the 6 valid pairs from forming
+                for b1, b2 in valid_pairs:
+                    var1 = f"x_{curr_l}_{b1}"
+                    var2 = f"x_{curr_r}_{b2}"
+                    key = tuple(sorted([var1, var2]))
+                    Q_ext[key] += P_mirror * w_d
                     
+            curr_l += 1
+            curr_r -= 1
+
     return dict(Q_ext), offset, loop_indices, fixed_loops
 
 def decode_extended_sample(sample, stems, loop_indices, fixed_loops):
@@ -147,7 +214,8 @@ def evaluate_extended_qubo(target_structure, num_reads=1000):
     print(f"Extended QUBO built with {len(Q_ext)} interactions.")
     print(f"Simulating Quantum Annealing ({num_reads} reads)...")
     
-    sampler = neal.SimulatedAnnealingSampler()
+    sampler = SimulatedAnnealingSampler()
+    # sampler = PathIntegralAnnealingSampler()
     sampleset = sampler.sample_qubo(Q_ext, num_reads=num_reads)
     
     results = []
