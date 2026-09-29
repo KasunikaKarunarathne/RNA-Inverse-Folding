@@ -103,7 +103,7 @@ def run_desirna_inverse(target_structure, num_output=10):
     # Run DesiRNA for 15 seconds per target
     cmd = [python_exe, desirna_script, "-f", input_file, "-t", "15", "-r", str(num_output)]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
+    total_generated = 0 
     # Parse output
     valid_sequences = set()
     output_csvs = glob.glob("d_*/*_results.csv")
@@ -111,6 +111,7 @@ def run_desirna_inverse(target_structure, num_output=10):
         with open(output_csvs[0], 'r') as f:
             reader = csv.DictReader(f)
             for row in reader:
+                total_generated +=1
                 seq = row.get("sequence", "")
                 if seq and check_structure(seq, target_structure):
                     valid_sequences.add(seq)
@@ -122,7 +123,7 @@ def run_desirna_inverse(target_structure, num_output=10):
         if os.path.isdir(folder):
             shutil.rmtree(folder, ignore_errors=True)
             
-    total_generated = 100 # DesiRNA explores many, we'll use 100 for normalization
+    
     successes = 0
     total_defect = 0.0
     total_diversity = 0.0

@@ -1,10 +1,16 @@
 import time
-import dimod
-import neal
+# import dimod
+# import neal
+# pyrefly: ignore [missing-import]
+from dwave.samplers import SimulatedAnnealingSampler
+# pyrefly: ignore [missing-import]
+from dwave.samplers import PathIntegralAnnealingSampler
 from docplex.mp.model import Model
 from phase1_rules import extract_stems
 from phase3_coef_fitter import calculate_qubo_coeffs
 from phase4_qubo_builder import build_approx_qubo
+import csv
+import os
 
 def decode_bits_to_pairs(sample_dict, stems):
     """Converts binary variable values back into sequence base pairs."""
@@ -60,13 +66,17 @@ def solve_qubo_with_cplex(Q_dict):
         return None, None
 
 
-def run_solver_benchmark(target_structure, c_coeffs=None):
+def run_solver_benchmark(target_structure, c_coeffs=None, loop_coeffs=None, mode="normal"):
     """
     Directly benchmarks D-Wave Neal (Quantum Annealing emulator) vs IBM CPLEX (Exact Classical Solver)
     on a given RNA target structure.
+    Modes:
+      - 'normal': Stems only.
+      - 'extended': Full sequence (one-hot encoding)
+      - 'extended_binary': Full sequence (supervisor 2-bit binary loop encoding)
     """
     print(f"\n=======================================================")
-    print(f"BENCHMARKING STRUCTURE: {target_structure}")
+    print(f"BENCHMARKING STRUCTURE: {target_structure} (Mode: {mode.upper()})")
     print(f"=======================================================")
     
     stems = extract_stems(target_structure)
@@ -78,19 +88,31 @@ def run_solver_benchmark(target_structure, c_coeffs=None):
         print("Calculating QUBO coefficients...")
         c_coeffs = calculate_qubo_coeffs(method="ols")
         
-    Q_dict, offset = build_approx_qubo(stems, c_coeffs)
+    if mode == "extended":
+        from phase17_extended import build_extended_qubo
+        Q_dict, offset, _, _ = build_extended_qubo(target_structure, stems, c_coeffs)
+    elif mode == "extended_binary":
+        from phase17_extended_binary import build_supervisor_qubo, calculate_binary_loop_coeffs
+        if loop_coeffs is None:
+            loop_coeffs = calculate_binary_loop_coeffs()
+        Q_dict, offset, _, _ = build_supervisor_qubo(target_structure, stems, c_coeffs, loop_coeffs)
+    else:
+        Q_dict, offset = build_approx_qubo(stems, c_coeffs)
+        
     num_vars = len(set([u for pair in Q_dict.keys() for u in pair]))
     print(f"QUBO generated with {num_vars} binary variables and {len(Q_dict)} interaction terms.\n")
     
     # --- 1. SOLVE WITH D-WAVE NEAL (ANNEALING) ---
     start_time = time.time()
-    sampler = neal.SimulatedAnnealingSampler()
-    sampleset = sampler.sample_qubo(Q_dict, num_reads=1000)
+    sampler = SimulatedAnnealingSampler()
+    # sampler = PathIntegralAnnealingSampler()
+    # Increase num_reads and sweeps for massive extended QUBOs
+    reads = 3000 if mode in ["extended", "extended_binary"] else 1000
+    sampleset = sampler.sample_qubo(Q_dict, num_reads=reads, num_sweeps=1000)
     neal_time = time.time() - start_time
     
     neal_best = sampleset.first.sample
     neal_energy = sampleset.first.energy + offset
-    neal_pairs = decode_bits_to_pairs(neal_best, stems)
     
     # --- 2. SOLVE WITH IBM CPLEX (CLASSICAL BRANCH & BOUND) ---
     start_time = time.time()
@@ -99,17 +121,16 @@ def run_solver_benchmark(target_structure, c_coeffs=None):
     
     if cplex_sample:
         cplex_energy = cplex_raw_energy + offset
-        cplex_pairs = decode_bits_to_pairs(cplex_sample, stems)
     else:
-        cplex_energy, cplex_pairs = None, "CPLEX Failed"
+        cplex_energy = None
         
     # --- 3. COMPARISON RESULTS TABLE ---
-    print(f"{'Solver':<20} | {'Runtime (sec)':<15} | {'Min QUBO Energy':<18} | {'Decoded Pairs'}")
-    print("-" * 80)
-    print(f"{'D-Wave Neal (SA)':<20} | {neal_time:<15.4f} | {neal_energy:<18.4f} | {str(neal_pairs)}")
+    print(f"{'Solver':<20} | {'Runtime (sec)':<15} | {'Min QUBO Energy':<18}")
+    print("-" * 60)
+    print(f"{'D-Wave Neal (SA)':<20} | {neal_time:<15.4f} | {neal_energy:<18.4f}")
     if cplex_sample:
-        print(f"{'IBM CPLEX (Exact)':<20} | {cplex_time:<15.4f} | {cplex_energy:<18.4f} | {str(cplex_pairs)}")
-    print("-" * 80)
+        print(f"{'IBM CPLEX (Exact)':<20} | {cplex_time:<15.4f} | {cplex_energy:<18.4f}")
+    print("-" * 60)
     
     # Check if annealing found the global minimum
     if cplex_sample and abs(neal_energy - cplex_energy) < 1e-4:
@@ -121,15 +142,29 @@ def run_solver_benchmark(target_structure, c_coeffs=None):
 if __name__ == "__main__":
     # IMPORTANT SPEED OPTIMIZATION: Compute coefficients just ONCE here before looping!
     print("Pre-computing QUBO coefficients once for all benchmarks...")
-    coeffs = calculate_qubo_coeffs(method="ols") # Using OLS as baseline for fast solver comparisons
+    coeffs = calculate_qubo_coeffs(method="ols") 
+    csv_path = r"d:\Academic UOP\Internship\simulation\Implementation\NN - Copy\Structures\fmqa_paper_structures.csv"
     
-    # Test across benchmark RNA hairpins of increasing complexity
-    test_structures = [
-        "(((...)))",
-        "((((((((....))))))))",
-        "((((((((..........))))))))",
-        "(((((((((((((((....)))))))))))))))"
-    ]
+    # Eterna100 subset representing increasing complexity
+    test_structures = []
+    if os.path.exists(csv_path):
+        with open(csv_path,'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                test_structures.append(row["Structure"])
+    else:
+        print(f"Error: Could not find dataset at {csv_path}")
     
+    print("\n\n>>> RUNNING NORMAL QUBO (STEMS ONLY) BENCHMARKS <<<")
     for struct in test_structures:
-        run_solver_benchmark(struct, c_coeffs=coeffs)
+        run_solver_benchmark(struct, c_coeffs=coeffs, mode="normal")
+        
+    print("\n\n>>> RUNNING EXTENDED QUBO (ALL-IN-ONE) BENCHMARKS <<<")
+    for struct in test_structures:
+        run_solver_benchmark(struct, c_coeffs=coeffs, mode="extended")
+
+    from phase17_extended_binary import calculate_binary_loop_coeffs
+    loop_coeffs = calculate_binary_loop_coeffs()
+    print("\n\n>>> RUNNING EXTENDED BINARY QUBO (2-BIT) BENCHMARKS <<<")
+    for struct in test_structures:
+        run_solver_benchmark(struct, c_coeffs=coeffs, loop_coeffs=loop_coeffs, mode="extended_binary")

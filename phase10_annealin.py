@@ -1,4 +1,4 @@
-import neal 
+from dwave.samplers import PathIntegralAnnealingSampler
 from phase2_turner_energy import get_turner_energy
 from phase1_rules import ALLOWED_PAIRS
 import RNA
@@ -122,8 +122,8 @@ def get_qubo_top_10_percent(target_structure , num_samples=5000, math_method="qu
     Q_dict , offset = build_approx_qubo(stems , c_coeffs)
     
     # Initialize the classical simmulated annealer 
-    sampler = neal.SimulatedAnnealingSampler()
-
+    # sampler =SimulatedAnnealingSampler()
+    sampler = PathIntegralAnnealingSampler() 
     # Command the solver to sample the qubo landscape num_samples times 
     sampleset = sampler.sample_qubo(Q_dict,num_reads= num_samples)
     combined_results  =[]

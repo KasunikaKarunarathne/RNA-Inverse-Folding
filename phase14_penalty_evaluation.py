@@ -207,24 +207,19 @@ def evaluate_all_strategies(target_structures, initial_samples=1000, variations=
     print(f"Plot saved to {plot_path}")
 
 if __name__ == "__main__":
-    test_structures = [
-        # 1. Simple hairpin (Baseline control)
-        "((((((((..........))))))))",
-        
-        # 2. HIV-1 TAR-like element (Stem with a bulge)
-        "(((((...(((((......)))))...)))))",
-        
-        # 3. Pre-miRNA-like element (Long stem with large internal loop)
-        "(((((((...((((((.........))))))....)))))))",
-        
-        # 4. Three-way junction (Y-shape)
-        "((((...((((....))))...((((....))))...))))",
-        
-        # 5. Fragmented stem (Multiple small internal loops / bulges)
-        "(((..(((...(((...(((....)))...)))...)))..)))",
-        
-        # 6. tRNA-like Cloverleaf (4-way junction, highly complex)
-        "(((((((..((((......)))).(((((.......))))).....(((((.......))))))))))))"
-    ]
+    import csv
+    import os
+
+    # Define the path to the dataset
+    csv_path = r"d:\Academic UOP\Internship\simulation\Implementation\NN - Copy\Structures\fmqa_paper_structures.csv"
+
+    targets = []
+    if os.path.exists(csv_path):
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                targets.append(row["Structure"])
+    else:
+        print(f"Error: Could not find dataset at {csv_path}")
     
-    evaluate_all_strategies(test_structures, initial_samples=1000, variations=10, num_corr_samples=1000)
+    evaluate_all_strategies(targets, initial_samples=1000, variations=10, num_corr_samples=1000)

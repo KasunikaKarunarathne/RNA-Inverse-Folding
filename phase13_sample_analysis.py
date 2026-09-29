@@ -3,7 +3,7 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import RNA
-import neal
+from dwave.samplers import PathIntegralAnnealingSampler
 
 from phase1_rules import extract_stems
 from phase3_coef_fitter import calculate_qubo_coeffs
@@ -21,7 +21,8 @@ def get_qubo_top_10_percent(target_structure,num_samples=5000,c_coeffs=None):
     stems = extract_stems(target_structure)
     Q_dict,offset = build_approx_qubo(stems,c_coeffs)
 
-    sampler = neal.SimulatedAnnealingSampler()
+    # sampler = neal.SimulatedAnnealingSampler()
+    sampler = PathIntegralAnnealingSampler() 
     sampleset = sampler.sample_qubo(Q_dict , num_reads=num_samples)
 
     combined_results =[]

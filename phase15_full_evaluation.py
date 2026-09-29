@@ -18,10 +18,13 @@ import os
 import csv
 import random
 import RNA
-import neal
+from dwave.samplers import PathIntegralAnnealingSampler
+from dwave.samplers import SimulatedAnnealingSampler
+# import neal
 import numpy as np
 from scipy.stats import spearmanr
 from collections import Counter
+import re
 
 # ── Reuse existing phase functions ──────────────────────────────────────────
 from phase1_rules import extract_stems, ALLOWED_PAIRS
@@ -93,44 +96,59 @@ def calculate_mirror_penalty_multistem(sequence, target_structure):
 
     return total_penalty
 
+def calculate_terminal_penalty(sequence, target_structure):
+    """
+    Adds a penalty for terminal AU and GU pairs. 
+    In the Turner model, helical ends lacking GC pairs are destabilizing.
+    """
+    stems = extract_stems(target_structure)
+    if not stems:
+        return 0.0
+
+    penalty = 0.0
+    # A simple positive penalty (+1.0) for AU/GU/UA/UG pairs at ends
+    terminal_penalty_value = 1.0 
+    
+    for stem in stems:
+        # Check the outermost pair of the stem
+        out_left, out_right = stem[0]
+        out_pair = sequence[out_left] + sequence[out_right]
+        if out_pair in ["AU", "UA", "GU", "UG"]:
+            penalty += terminal_penalty_value
+            
+        # Check the innermost pair of the stem (bordering the loop)
+        in_left, in_right = stem[-1]
+        in_pair = sequence[in_left] + sequence[in_right]
+        if in_pair in ["AU", "UA", "GU", "UG"]:
+            penalty += terminal_penalty_value
+            
+    return penalty
 
 def calculate_loop_entropy_penalty_multistem(sequence, target_structure):
     """
-    Multi-stem loop entropy penalty. Groups consecutive dots into separate 
-    loop regions and only checks for potential base pairs WITHIN each region.
-    
-    The original (phase 10) checked all dots globally, which incorrectly 
-    penalized bases from different stems' loops pairing with each other.
+    Restored Global Entropy Penalty: Checks ALL unpaired dots globally across the entire molecule.
+    This acts as a crude "Anti-Kissing Loop" penalty, preventing loops from different stems 
+    from accidentally pairing with each other and collapsing the structure.
     """
     penalty = 0.0
     loop_indices = [i for i, char in enumerate(target_structure) if char == "."]
     if not loop_indices:
         return 0.0
 
-    # Group consecutive dot indices into separate loop regions
-    loop_regions = []
-    current_region = [loop_indices[0]]
-    for i in range(1, len(loop_indices)):
-        if loop_indices[i] == loop_indices[i - 1] + 1:
-            current_region.append(loop_indices[i])
-        else:
-            loop_regions.append(current_region)
-            current_region = [loop_indices[i]]
-    loop_regions.append(current_region)
-
-    # Apply penalty WITHIN each loop region independently
-    for region in loop_regions:
-        for i in range(len(region)):
-            # RNA loops need minimum 3 bases to bend, so skip pairs < 4 apart
-            for j in range(i + 4, len(region)):
-                idx1 = region[i]
-                idx2 = region[j]
+    # Global check across all unpaired bases
+    for i in range(len(loop_indices)):
+        for j in range(i + 4, len(loop_indices)):
+            idx1 = loop_indices[i]
+            idx2 = loop_indices[j]
+            
+            # Ensure they are actually separated by at least 3 bases spatially
+            if idx2 - idx1 >= 4:
                 pair_str = sequence[idx1] + sequence[idx2]
                 if pair_str in ALLOWED_PAIRS:
-                    penalty += 2
+                    penalty += 2.0
     return penalty
 
-def get_qubo_pairs_via_noisy_annealing(target_structure, c_coeffs, num_reads=1000):
+def get_qubo_pairs_via_noisy_annealing(target_structure, c_coeffs, num_reads=1000, sampler_type="SA"):
     """
     Solves the QUBO via Simulated Annealing with dynamically shifting Gaussian noise.
     Simulates Quantum Tunneling by continuously shifting the energy landscape.
@@ -141,7 +159,11 @@ def get_qubo_pairs_via_noisy_annealing(target_structure, c_coeffs, num_reads=100
     total_pairs = sum(len(stem) for stem in stems)
     dynamic_noise_scale = min(0.15, max(0.03, total_pairs * 0.015))
 
-    sampler = neal.SimulatedAnnealingSampler()
+    if sampler_type == "SA":
+        sampler = SimulatedAnnealingSampler()
+    else:
+        sampler = PathIntegralAnnealingSampler() 
+    
     all_results = []
     
     # Run 10 separate batches. Generate a BRAND NEW noisy landscape for each batch!
@@ -153,7 +175,10 @@ def get_qubo_pairs_via_noisy_annealing(target_structure, c_coeffs, num_reads=100
         for k, v in Q_dict.items():
             noisy_Q[k] = v + np.random.normal(0, dynamic_noise_scale * max(0.1, abs(v)))
             
-        sampleset = sampler.sample_qubo(noisy_Q, num_reads=reads_per_batch)
+        if sampler_type == "SQA":
+            sampleset = sampler.sample_qubo(noisy_Q, num_reads=reads_per_batch, num_trotter_slices=10)
+        else:
+            sampleset = sampler.sample_qubo(noisy_Q, num_reads=reads_per_batch)
         
         for sample, _ in sampleset.data(["sample", "energy"]):
             pairs_list = decode_bits_to_pairs(sample, stems)
@@ -190,7 +215,7 @@ def get_qubo_pairs_via_noisy_annealing(target_structure, c_coeffs, num_reads=100
 # ============================================================================
 # PAIR SELECTION METHODS
 # ============================================================================
-def get_qubo_pairs_via_annealing(target_structure, c_coeffs, num_reads=1000):
+def get_qubo_pairs_via_annealing(target_structure, c_coeffs, num_reads=1000, sampler_type="SA"):
     """
     Solves the QUBO via Simulated Annealing and returns deduplicated top-10%
     pair assignments, plus diversity statistics for logging.
@@ -198,8 +223,15 @@ def get_qubo_pairs_via_annealing(target_structure, c_coeffs, num_reads=1000):
     stems = extract_stems(target_structure)
     Q_dict, offset = build_approx_qubo(stems, c_coeffs)
 
-    sampler = neal.SimulatedAnnealingSampler()
-    sampleset = sampler.sample_qubo(Q_dict, num_reads=num_reads)
+    if sampler_type == "SA":
+        sampler = SimulatedAnnealingSampler()
+    else:
+        sampler = PathIntegralAnnealingSampler() 
+        
+    if sampler_type == "SQA":
+        sampleset = sampler.sample_qubo(Q_dict, num_reads=num_reads, num_trotter_slices=10)
+    else:
+        sampleset = sampler.sample_qubo(Q_dict, num_reads=num_reads)
 
     all_results = []
     for sample, energy in sampleset.data(["sample", "energy"]):
@@ -279,22 +311,25 @@ def fill_loops(target_structure, pair_assignment, pool_size, num_output, use_pen
             fixed_bases[right] = pair_string[1]
             pair_idx += 1
             
+
     # Inject stabilizing Tetraloops (Positive Design)
     import re
     # Find all (....) hairpin loops
     for match in re.finditer(r'\(\.\.\.\.\)', target_structure):
         close_left = match.start()   # The '(' position
         close_right = match.end() - 1  # The ')' position
-        # Force closing pair to C-G (optimal for GNRA tetraloops)
+        # Both GNRA and UNCG tetraloops are exceptionally stable when closed by C-G
         fixed_bases[close_left] = 'C'
         fixed_bases[close_right] = 'G'
         # Force loop to GCAA
         idx = match.start() + 1
-        fixed_bases[idx] = 'G'
-        fixed_bases[idx+1] = 'C'
-        fixed_bases[idx+2] = 'A'
-        fixed_bases[idx+3] = 'A'
 
+        # Randomly chose between a stable GNRA(GCAA) or UNCG(UUCG)
+        tetraloop_choice = random.choice(["GCAA","UUCG"])
+        fixed_bases[idx] = tetraloop_choice[0]
+        fixed_bases[idx+1] = tetraloop_choice[1]
+        fixed_bases[idx+2] = tetraloop_choice[2]
+        fixed_bases[idx+3] = tetraloop_choice[3]
 
     bases = ["A", "U", "C", "G"]
     gen_count = pool_size if use_penalty else num_output
@@ -306,7 +341,6 @@ def fill_loops(target_structure, pair_assignment, pool_size, num_output, use_pen
             if i in fixed_bases:
                 seq.append(fixed_bases[i])
             else:
-                #seq.append(random.choice(bases))
                 # Negative Design: 90% chance to pick A or C to prevent unwanted loop pairings
                 seq.append(random.choices(["A", "C", "G", "U"], weights=[45, 45, 5, 5])[0])
         full_seq = "".join(seq)
@@ -314,6 +348,9 @@ def fill_loops(target_structure, pair_assignment, pool_size, num_output, use_pen
         if use_penalty:
             penalty = calculate_mirror_penalty_multistem(full_seq, target_structure)
             penalty += calculate_loop_entropy_penalty_multistem(full_seq, target_structure)
+            penalty += calculate_terminal_penalty(full_seq,target_structure)
+            
+            # penalty += calculate_terminal_penalty(full_seq,target_structure)
             candidates.append((penalty, full_seq))
         else:
             candidates.append((0.0, full_seq))

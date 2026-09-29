@@ -18,11 +18,11 @@ def build_approx_qubo(stems , c_coeffs, penalty_weight=100):
         for pair in stem:
             p0 = f"p_{pair[0]}_{pair[1]}_0"
             p1 = f"p_{pair[0]}_{pair[1]}_1"
-
+    
             constant_offset  += penalty_weight
             Q[(p0,p0)] -= penalty_weight
             Q[(p1,p1)] -= penalty_weight
-
+    
             # ensure the dictionary keys are sorted 
             key = tuple(sorted([p0,p1]))
             Q[key] += penalty_weight

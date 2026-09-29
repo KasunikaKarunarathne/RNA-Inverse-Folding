@@ -4,11 +4,14 @@ import numpy as np
 import matplotlib.pyplot as plt  
 from scipy.stats import spearmanr
 import RNA
-
 from phase1_rules import extract_stems, PAIR_ENCODING,ALLOWED_PAIRS
 from phase2_turner_energy import calculate_true_turner_energy
 from phase3_coef_fitter import calculate_qubo_coeffs
 from phase4_qubo_builder import build_approx_qubo
+import csv
+
+# Define the path to the dataset
+csv_path = r"d:\Academic UOP\Internship\simulation\Implementation\NN - Copy\Structures\fmqa_paper_structures.csv"
 
 def get_vienna_energy(sequence, structure):
     """
@@ -290,12 +293,20 @@ def run_statistical_sampling(target_structure, num_samples,math_method="ols"):
 
 
 if __name__ == "__main__":
-    target_list = ["..............(((((.....)))))", "(((...)))","...((((((.........))))))."]
+    # target_list = ["..............(((((.....)))))", "(((...)))","...((((((.........))))))."]
     # true structure :CUCUUUAACAUUAAGCCCUGAAGAAGGGC
     #target_1 = "(((...)))" # true structure :GCCGUCGGC
     # target_1 = "...((((((.........))))))."
     # methods : ols , l1 , minimax , rank
     # new methods : huber, wls,margin_rank
+    target_list = []
+    if os.path.exists(csv_path):
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                target_list.append(row["Structure"])
+    else:
+        print(f"Error: Could not find dataset at {csv_path}")
     for i in target_list:
         run_statistical_sampling(i,num_samples=5000,math_method="ols")
         print("\n")
